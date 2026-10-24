@@ -50,16 +50,18 @@ export function parse(markdown: string): Document {
 	const heading = tree.children.find((node) => node.type === "heading" && node.depth === 1);
 	const root: Root = { ...tree, children: tree.children.filter((node) => node !== heading) };
 
+	// GitHub numbers duplicate slugs in document order, the title heading included.
 	const slugger = new GithubSlugger();
-	if (heading) slugger.slug(plainText(heading));
 	const anchors = new Map<string, string>();
-	walk(root, (node) => {
+	walk(tree, (node) => {
 		if (node.type !== "heading") return;
 		const text = plainText(node);
-		anchors.set(slugger.slug(text), confluenceAnchor(text));
+		const slug = slugger.slug(text);
+		if (node !== heading) anchors.set(slug, confluenceAnchor(text));
 	});
 
-	return { root, title: heading ? plainText(heading) : null, anchors };
+	const title = heading ? stripInvalidXml(plainText(heading)).replace(/\s+/g, " ").trim() : "";
+	return { root, title: title || null, anchors };
 }
 
 /** Confluence's heading anchor: case kept, whitespace runs become "-", RFC 3986 encoding. */
@@ -90,17 +92,23 @@ export function render(doc: Document, resolver: Resolver): string {
 		footnoteOrder: [],
 		inListItem: false,
 	};
+	// CommonMark: the first definition of a label wins.
 	walk(doc.root, (node) => {
-		if (node.type === "definition") ctx.definitions.set(node.identifier, node);
-		if (node.type === "footnoteDefinition") ctx.footnoteDefinitions.set(node.identifier, node);
+		if (node.type === "definition" && !ctx.definitions.has(node.identifier)) {
+			ctx.definitions.set(node.identifier, node);
+		}
+		if (node.type === "footnoteDefinition" && !ctx.footnoteDefinitions.has(node.identifier)) {
+			ctx.footnoteDefinitions.set(node.identifier, node);
+		}
 	});
 
 	const body = nodes(doc.root.children, ctx);
 	const footnotes: string[] = [];
+	const inFootnote: Context = { ...ctx, inListItem: true };
 	// Footnote definitions can reference further footnotes, which grows the order while we render.
 	for (let i = 0; i < ctx.footnoteOrder.length; i++) {
 		const definition = ctx.footnoteDefinitions.get(ctx.footnoteOrder[i] as string);
-		footnotes.push(`<li>${definition ? nodes(definition.children, ctx) : ""}</li>`);
+		footnotes.push(`<li>${definition ? nodes(definition.children, inFootnote) : ""}</li>`);
 	}
 	return footnotes.length > 0 ? `${body}<hr /><ol>${footnotes.join("")}</ol>` : body;
 }
@@ -211,7 +219,7 @@ function list(n: List, ctx: Context): string {
 	if (n.children.every((item) => typeof item.checked === "boolean")) {
 		const tasks = n.children.map((item) => {
 			const status = item.checked ? "complete" : "incomplete";
-			return `<ac:task><ac:task-status>${status}</ac:task-status><ac:task-body>${listItemBody(item, true, ctx)}</ac:task-body></ac:task>`;
+			return `<ac:task><ac:task-status>${status}</ac:task-status><ac:task-body>${listItemBody(item, tight, ctx)}</ac:task-body></ac:task>`;
 		});
 		return `<ac:task-list>${tasks.join("")}</ac:task-list>`;
 	}
@@ -252,13 +260,22 @@ function codeMacro(value: string, language: string | null | undefined): string {
 	return `<ac:structured-macro ac:name="code">${parameter}<ac:plain-text-body><![CDATA[${cdata}]]></ac:plain-text-body></ac:structured-macro>`;
 }
 
-const safeScheme = /^(https?|mailto):/i;
+const safeScheme = /^(https?|mailto|tel):/i;
 const anyScheme = /^[a-z][a-z0-9+.-]*:/i;
+
+/** A percent-decoded fragment, as a browser shows it; the raw value when it does not decode. */
+export function decodeFragment(fragment: string): string {
+	try {
+		return decodeURIComponent(fragment);
+	} catch {
+		return fragment;
+	}
+}
 
 function link(url: string, children: PhrasingContent[], at: number, ctx: Context): string {
 	const text = nodes(children, ctx);
 	if (url.startsWith("#")) {
-		const fragment = url.slice(1);
+		const fragment = decodeFragment(url.slice(1));
 		return `<a href="#${escapeAttribute(ctx.doc.anchors.get(fragment) ?? fragment)}">${text}</a>`;
 	}
 
@@ -268,9 +285,22 @@ function link(url: string, children: PhrasingContent[], at: number, ctx: Context
 			const anchor = target.anchor ? ` ac:anchor="${escapeAttribute(target.anchor)}"` : "";
 			return `<ac:link${anchor}><ri:page ri:content-title="${escapeAttribute(target.title)}" /><ac:link-body>${text}</ac:link-body></ac:link>`;
 		}
-		case "url":
-			if (anyScheme.test(target.href) && !safeScheme.test(target.href)) return text;
-			return `<a href="${escapeAttribute(target.href)}">${text}</a>`;
+		case "url": {
+			// Browsers ignore leading and trailing controls and spaces, and tabs and newlines inside
+			// a URL, so the scheme check must see the URL the way a browser will.
+			const href = target.href
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+				.replace(/^[\u0000- ]+|[\u0000- ]+$/g, "")
+				.replace(/[\t\n\r]/g, "");
+			if (anyScheme.test(href) && !safeScheme.test(href)) {
+				ctx.resolver.warn(
+					`Link with an unsupported scheme is published as text: ${href.slice(0, 60)}`,
+					at,
+				);
+				return text;
+			}
+			return `<a href="${escapeAttribute(href)}">${text}</a>`;
+		}
 		case "text":
 			return text;
 		default:
@@ -313,7 +343,7 @@ function line(n: Nodes): number {
 /** XML 1.0 forbids these control characters even when escaped. */
 function stripInvalidXml(text: string): string {
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
-	return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+	return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, "");
 }
 
 function escapeText(text: string): string {

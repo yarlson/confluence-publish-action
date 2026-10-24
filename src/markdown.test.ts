@@ -44,6 +44,12 @@ describe("parse", () => {
 		expect(convert("## Only a subheading").title).toBeNull();
 	});
 
+	it("collapses whitespace in the title and treats an empty H1 as no title", () => {
+		expect(convert("Line one\nline two\n===").title).toBe("Line one line two");
+		expect(convert("# ![logo](img/logo.png)").title).toBeNull();
+		expect(convert("#\n\nBody").title).toBeNull();
+	});
+
 	it("drops YAML front matter", () => {
 		expect(convert("---\ntitle: Hello\n---\n\nBody")).toEqual({
 			title: null,
@@ -192,6 +198,61 @@ describe("render", () => {
 				["Raw HTML is not published: <br>", 1],
 				["Raw HTML is not published: <div>x</div>", 3],
 			],
+		});
+	});
+
+	it("keeps the paragraphs of a loose task item apart", () => {
+		expect(convert("- [ ] a\n\n  more\n- [x] b").body).toBe(
+			"<ac:task-list>" +
+				"<ac:task><ac:task-status>incomplete</ac:task-status><ac:task-body><p>a</p><p>more</p></ac:task-body></ac:task>" +
+				"<ac:task><ac:task-status>complete</ac:task-status><ac:task-body><p>b</p></ac:task-body></ac:task>" +
+				"</ac:task-list>",
+		);
+	});
+
+	it("removes U+FFFE and U+FFFF, which XML does not allow", () => {
+		expect(convert("a\uFFFEb\uFFFFc").body).toBe("<p>abc</p>");
+	});
+
+	it("uses the first of two definitions with the same label, as CommonMark does", () => {
+		expect(convert("[a][x]\n\n[x]: https://first.example\n[x]: https://second.example").body).toBe(
+			'<p><a href="https://first.example">a</a></p>',
+		);
+	});
+
+	it("renders an alert inside a footnote as an expand macro", () => {
+		expect(convert("x[^1]\n\n[^1]: > [!NOTE]\n    > y").body).toBe(
+			"<p>x<sup>[1]</sup></p><hr /><ol><li>" +
+				'<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">📘 Note</ac:parameter>' +
+				"<ac:rich-text-body><p>y</p></ac:rich-text-body></ac:structured-macro></li></ol>",
+		);
+	});
+
+	it("maps a percent-encoded same-page anchor", () => {
+		expect(convert("## Über\n\n[u](#%C3%BCber)").body).toBe(
+			'<h2>Über</h2><p><a href="#%C3%9Cber">u</a></p>',
+		);
+	});
+
+	it("numbers duplicate slugs in document order, the title included", () => {
+		expect(convert("## Setup\n\n# Setup\n\n## Setup\n\n[a](#setup) [b](#setup-2)").body).toBe(
+			'<h2>Setup</h2><h2>Setup</h2><p><a href="#Setup">a</a> <a href="#Setup">b</a></p>',
+		);
+	});
+
+	it.each([
+		["< javascript:alert(1)>", "leading space"],
+		["<\u0001javascript:alert(1)>", "leading control character"],
+		["<java\tscript:alert(1)>", "tab inside"],
+	])("renders only the text of a javascript: link hidden by a %s", (url, _case) => {
+		expect(convert(`[x](${url})`).body).toBe("<p>x</p>");
+	});
+
+	it("keeps tel: links and warns about other schemes", () => {
+		expect(convert("[call](tel:+123) [get](ftp://host/file)")).toEqual({
+			title: null,
+			body: '<p><a href="tel:+123">call</a> get</p>',
+			warnings: [["Link with an unsupported scheme is published as text: ftp://host/file", 1]],
 		});
 	});
 

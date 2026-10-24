@@ -32559,14 +32559,15 @@ function parse2(markdown) {
   const heading = tree.children.find((node3) => node3.type === "heading" && node3.depth === 1);
   const root = { ...tree, children: tree.children.filter((node3) => node3 !== heading) };
   const slugger = new BananaSlug();
-  if (heading) slugger.slug(plainText(heading));
   const anchors = /* @__PURE__ */ new Map();
-  walk(root, (node3) => {
+  walk(tree, (node3) => {
     if (node3.type !== "heading") return;
     const text4 = plainText(node3);
-    anchors.set(slugger.slug(text4), confluenceAnchor(text4));
+    const slug2 = slugger.slug(text4);
+    if (node3 !== heading) anchors.set(slug2, confluenceAnchor(text4));
   });
-  return { root, title: heading ? plainText(heading) : null, anchors };
+  const title = heading ? stripInvalidXml(plainText(heading)).replace(/\s+/g, " ").trim() : "";
+  return { root, title: title || null, anchors };
 }
 function confluenceAnchor(text4) {
   return encodeURIComponent(text4.trim().replace(/\s+/g, "-")).replace(
@@ -32584,14 +32585,19 @@ function render(doc, resolver2) {
     inListItem: false
   };
   walk(doc.root, (node3) => {
-    if (node3.type === "definition") ctx.definitions.set(node3.identifier, node3);
-    if (node3.type === "footnoteDefinition") ctx.footnoteDefinitions.set(node3.identifier, node3);
+    if (node3.type === "definition" && !ctx.definitions.has(node3.identifier)) {
+      ctx.definitions.set(node3.identifier, node3);
+    }
+    if (node3.type === "footnoteDefinition" && !ctx.footnoteDefinitions.has(node3.identifier)) {
+      ctx.footnoteDefinitions.set(node3.identifier, node3);
+    }
   });
   const body = nodes(doc.root.children, ctx);
   const footnotes = [];
+  const inFootnote = { ...ctx, inListItem: true };
   for (let i = 0; i < ctx.footnoteOrder.length; i++) {
     const definition2 = ctx.footnoteDefinitions.get(ctx.footnoteOrder[i]);
-    footnotes.push(`<li>${definition2 ? nodes(definition2.children, ctx) : ""}</li>`);
+    footnotes.push(`<li>${definition2 ? nodes(definition2.children, inFootnote) : ""}</li>`);
   }
   return footnotes.length > 0 ? `${body}<hr /><ol>${footnotes.join("")}</ol>` : body;
 }
@@ -32690,7 +32696,7 @@ function list2(n, ctx) {
   if (n.children.every((item) => typeof item.checked === "boolean")) {
     const tasks = n.children.map((item) => {
       const status = item.checked ? "complete" : "incomplete";
-      return `<ac:task><ac:task-status>${status}</ac:task-status><ac:task-body>${listItemBody(item, true, ctx)}</ac:task-body></ac:task>`;
+      return `<ac:task><ac:task-status>${status}</ac:task-status><ac:task-body>${listItemBody(item, tight, ctx)}</ac:task-body></ac:task>`;
     });
     return `<ac:task-list>${tasks.join("")}</ac:task-list>`;
   }
@@ -32721,12 +32727,19 @@ function codeMacro(value2, language) {
   const cdata = stripInvalidXml(value2).replaceAll("]]>", "]]]]><![CDATA[>");
   return `<ac:structured-macro ac:name="code">${parameter}<ac:plain-text-body><![CDATA[${cdata}]]></ac:plain-text-body></ac:structured-macro>`;
 }
-var safeScheme = /^(https?|mailto):/i;
+var safeScheme = /^(https?|mailto|tel):/i;
 var anyScheme = /^[a-z][a-z0-9+.-]*:/i;
+function decodeFragment(fragment) {
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
+}
 function link(url, children, at, ctx) {
   const text4 = nodes(children, ctx);
   if (url.startsWith("#")) {
-    const fragment = url.slice(1);
+    const fragment = decodeFragment(url.slice(1));
     return `<a href="#${escapeAttribute(ctx.doc.anchors.get(fragment) ?? fragment)}">${text4}</a>`;
   }
   const target = ctx.resolver.link(url, at);
@@ -32735,9 +32748,17 @@ function link(url, children, at, ctx) {
       const anchor = target.anchor ? ` ac:anchor="${escapeAttribute(target.anchor)}"` : "";
       return `<ac:link${anchor}><ri:page ri:content-title="${escapeAttribute(target.title)}" /><ac:link-body>${text4}</ac:link-body></ac:link>`;
     }
-    case "url":
-      if (anyScheme.test(target.href) && !safeScheme.test(target.href)) return text4;
-      return `<a href="${escapeAttribute(target.href)}">${text4}</a>`;
+    case "url": {
+      const href = target.href.replace(/^[\u0000- ]+|[\u0000- ]+$/g, "").replace(/[\t\n\r]/g, "");
+      if (anyScheme.test(href) && !safeScheme.test(href)) {
+        ctx.resolver.warn(
+          `Link with an unsupported scheme is published as text: ${href.slice(0, 60)}`,
+          at
+        );
+        return text4;
+      }
+      return `<a href="${escapeAttribute(href)}">${text4}</a>`;
+    }
     case "text":
       return text4;
     default:
@@ -32773,7 +32794,7 @@ function line(n) {
   return n.position?.start.line ?? 0;
 }
 function stripInvalidXml(text4) {
-  return text4.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+  return text4.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, "");
 }
 function escapeText(text4) {
   return stripInvalidXml(text4).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
