@@ -12,7 +12,8 @@
 		"build": "esbuild src/index.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/index.js --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
 		"check": "biome check . && tsc --noEmit && vitest run",
 		"lint:fix": "biome check --write .",
-		"test": "vitest run"
+		"test": "vitest run",
+		"test:live": "CONFLUENCE_LIVE=1 vitest run test/live.test.ts"
 	},
 	"dependencies": {
 		"@actions/core": "3.0.1",
