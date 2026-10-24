@@ -1,6 +1,6 @@
 {
 	"name": "confluence-publish-action",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"private": true,
 	"description": "GitHub Action that publishes a folder of Markdown files as a Confluence page tree",
 	"license": "MIT",

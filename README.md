@@ -45,7 +45,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: yarlson/confluence-publish-action@v0.1.0
+      - uses: yarlson/confluence-publish-action@v0.1.1
         with:
           confluence-url: https://example.atlassian.net/wiki
           root-page-id: "123456789"
@@ -53,9 +53,9 @@ jobs:
           api-token: ${{ secrets.CONFLUENCE_API_TOKEN }}
 ```
 
-Releases are immutable, so the `v0.1.0` tag always points to the same commit. If your
+Releases are immutable, so the `v0.1.1` tag always points to the same commit. If your
 organization requires actions pinned to a full commit SHA, use the release commit instead:
-`yarlson/confluence-publish-action@<sha> # v0.1.0`.
+`yarlson/confluence-publish-action@<sha> # v0.1.1`.
 
 To see what a change will do, run the same step with `dry-run: true`, for example on pull requests.
 Pull requests from forks get no secrets, so a dry run fails there.
