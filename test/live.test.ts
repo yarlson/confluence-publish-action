@@ -1,7 +1,8 @@
 /**
  * Checks the points that Atlassian does not document for Cloud against a real site. Runs only with
- * `npm run test:live`, which needs .env.test (see the README). Every page it creates goes under a
- * new temporary page below CONFLUENCE_PARENT_PAGE_ID and moves to the trash at the end.
+ * `npm run test:live`, which needs .env.test (see the README). Every page it creates goes under one
+ * new temporary page at the top level of CONFLUENCE_SPACE_KEY, outside the homepage tree, so no
+ * existing page gains a child. At the end it moves only those pages to the trash.
  */
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,12 +16,17 @@ if (live) process.loadEnvFile(new URL("../.env.test", import.meta.url));
 
 function env(name: string): string {
 	const value = process.env[name];
-	if (!value) throw new Error(`.env.test must set ${name}`);
+	if (!value) throw new Error(`.env.test or the environment must set ${name}`);
 	return value;
 }
 
+/** A valid 1×1 PNG. */
+const onePixelPng =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
 describe.skipIf(!live)("live Confluence Cloud", () => {
 	const suffix = Date.now();
+	const folder = `guide-${suffix}`;
 	const writes: string[] = [];
 	const countingFetch: typeof fetch = (input, init) => {
 		if (init?.method && init.method !== "GET") writes.push(`${init.method} ${String(input)}`);
@@ -29,14 +35,22 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 	const log = { info: () => {}, warning: () => {} };
 	let confluence: Confluence;
 	let spaceId: string;
+	let rootId: string | undefined;
+	let workspace: string | undefined;
 	let config: Config;
 
-	async function get<T>(path: string): Promise<T> {
+	async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const credentials = btoa(`${env("CONFLUENCE_EMAIL")}:${env("CONFLUENCE_API_TOKEN")}`);
 		const response = await fetch(`${env("CONFLUENCE_URL")}${path}`, {
-			headers: { Authorization: `Basic ${credentials}`, Accept: "application/json" },
+			method,
+			headers: {
+				Authorization: `Basic ${credentials}`,
+				Accept: "application/json",
+				"Content-Type": "application/json",
+			},
+			body: body === undefined ? undefined : JSON.stringify(body),
 		});
-		if (!response.ok) throw new Error(`GET ${path} failed with ${response.status}`);
+		if (!response.ok) throw new Error(`${method} ${path} failed with ${response.status}`);
 		return (await response.json()) as T;
 	}
 
@@ -52,22 +66,33 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 			email: env("CONFLUENCE_EMAIL"),
 			token: env("CONFLUENCE_API_TOKEN"),
 		});
-		const parentId = env("CONFLUENCE_PARENT_PAGE_ID");
-		spaceId = (await get<{ spaceId: string }>(`/api/v2/pages/${parentId}`)).spaceId;
-		const rootId = await confluence.createPage({
-			spaceId,
-			parentId,
-			title: `confluence-publish-action live test ${suffix}`,
-			body: "<p>Temporary page for a test run.</p>",
-		});
-		if (!rootId) throw new Error("creating the temporary root page got no response");
+		const key = env("CONFLUENCE_SPACE_KEY");
+		const spaces = await call<{ results: Array<{ id: string }> }>(
+			"GET",
+			`/api/v2/spaces?keys=${key}`,
+		);
+		const space = spaces.results[0];
+		if (!space) throw new Error(`space ${key} not found`);
+		spaceId = space.id;
+		rootId = (
+			await call<{ id: string }>("POST", "/api/v2/pages?root-level=true", {
+				spaceId,
+				status: "current",
+				title: `confluence-publish-action live test ${suffix}`,
+				body: {
+					representation: "storage",
+					value: "<p>Temporary page for a test run. It moves to the trash when the run ends.</p>",
+				},
+			})
+		).id;
 
-		const workspace = await realpath(await mkdtemp(join(tmpdir(), "live-")));
-		const files: Record<string, string> = {
-			"docs/guide/setup.md": `# Setup ${suffix}\n\n## Install It\n\nSteps.`,
+		workspace = await realpath(await mkdtemp(join(tmpdir(), "live-")));
+		const files: Record<string, string | Uint8Array> = {
+			[`docs/${folder}/setup.md`]: `# Setup ${suffix}\n\n## Install It\n\n![logo](img/logo.png)`,
+			[`docs/${folder}/img/logo.png`]: Buffer.from(onePixelPng, "base64"),
 			"docs/intro.md": [
 				`# Intro ${suffix}`,
-				"[setup](guide/setup.md#install-it) and [more](#more)",
+				`[setup](${folder}/setup.md#install-it) and [more](#more)`,
 				"## More",
 				"![logo](https://github.githubassets.com/favicons/favicon.png)",
 			].join("\n\n"),
@@ -91,17 +116,19 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 	}, 120_000);
 
 	afterAll(async () => {
-		if (!config) return;
-		const remote = await confluence.readRemote(config.rootPageId);
+		if (workspace) await rm(workspace, { recursive: true, force: true });
+		if (!rootId) return;
+		const remote = await confluence.readRemote(rootId);
+		const parents = new Map(remote.nodes.map((node) => [node.id, node.parentId]));
 		const depth = (id: string): number => {
-			const page = remote.pages.find((p) => p.id === id);
-			return page ? depth(page.parentId) + 1 : 0;
+			const parent = parents.get(id);
+			return parent === undefined ? 0 : depth(parent) + 1;
 		};
-		for (const page of [...remote.pages].sort((a, b) => depth(b.id) - depth(a.id))) {
+		const created = remote.pages.filter((page) => page.authorId === remote.accountId);
+		for (const page of created.sort((a, b) => depth(b.id) - depth(a.id))) {
 			await confluence.deletePage(page.id);
 		}
-		await confluence.deletePage(config.rootPageId);
-		await rm(config.workspace, { recursive: true, force: true });
+		await confluence.deletePage(rootId);
 	}, 120_000);
 
 	it("makes no writes on a second run", async () => {
@@ -112,7 +139,8 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 	}, 120_000);
 
 	it("keeps page links, heading anchors and URL images as written", async () => {
-		const page = await get<{ body: { storage: { value: string } } }>(
+		const page = await call<{ body: { storage: { value: string } } }>(
+			"GET",
 			`/api/v2/pages/${await pageId(`Intro ${suffix}`)}?body-format=storage`,
 		);
 		const body = page.body.storage.value;
@@ -123,7 +151,8 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 	});
 
 	it("creates pages that are not marked for the legacy editor", async () => {
-		const properties = await get<{ results: Array<{ key: string; value: unknown }> }>(
+		const properties = await call<{ results: Array<{ key: string; value: unknown }> }>(
+			"GET",
 			`/api/v2/pages/${await pageId(`Intro ${suffix}`)}/properties`,
 		);
 		const editor = properties.results.find((property) => property.key === "editor")?.value;
@@ -135,10 +164,20 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 		expect(holders.get(`intro ${suffix}`)).toBe(await pageId(`Intro ${suffix}`));
 	});
 
+	it("uploads a local image as an attachment that carries its hash", async () => {
+		const attachments = await call<{ results: Array<{ title: string; comment?: string }> }>(
+			"GET",
+			`/api/v2/pages/${await pageId(`Setup ${suffix}`)}/attachments`,
+		);
+		expect(attachments.results.map((a) => [a.title, a.comment?.startsWith("sha256:")])).toEqual([
+			["logo.png", true],
+		]);
+	});
+
 	it("lets a new page reuse the title of a page in the trash", async () => {
 		const page = {
 			spaceId,
-			parentId: config.rootPageId,
+			parentId: rootId as string,
 			title: `Trash ${suffix}`,
 			body: "<p>x</p>",
 		};
@@ -147,4 +186,15 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 		await confluence.deletePage(first);
 		await expect(confluence.createPage(page)).resolves.toMatch(/^\d+$/);
 	});
+
+	it("updates a changed page, and the run after that writes nothing", async () => {
+		await writeFile(join(config.workspace, "docs/intro.md"), `# Intro ${suffix}\n\nChanged text.`);
+		const update = await publish(config, { log });
+		expect(update.applied?.error).toBeUndefined();
+		expect(update.steps.map((step) => step.kind)).toEqual(["skip", "skip", "update"]);
+		writes.length = 0;
+		const after = await publish(config, { log, fetch: countingFetch });
+		expect(after.steps.map((step) => step.kind)).toEqual(["skip", "skip", "skip"]);
+		expect(writes).toEqual([]);
+	}, 120_000);
 });

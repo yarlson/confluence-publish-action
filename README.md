@@ -11,9 +11,9 @@ Git is the source of truth. Confluence is a read-only mirror of one folder.
   content it does not own.
 
 > [!NOTE]
-> Version 0.x. The behavior in this README is tested against an in-memory Confluence. Some
-> storage-format details are not yet confirmed on a real Cloud site (see
-> [docs/design.md](docs/design.md#open-questions)).
+> Version 0.x. The behavior in this README is tested against an in-memory Confluence, and the live
+> test passed against a Confluence Cloud site on 2026-10-24. Some Confluence behavior is still
+> unconfirmed (see [docs/design.md](docs/design.md#open-questions)).
 
 ## Usage
 
@@ -173,10 +173,11 @@ npm run check   # Biome, TypeScript, Vitest
 npm run build   # writes dist/index.js; commit it
 ```
 
-`npm run test:live` publishes a fixture tree to a real Confluence Cloud site. It needs a
-`.env.test` file with `CONFLUENCE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` and
-`CONFLUENCE_PARENT_PAGE_ID`. The test creates its pages under that parent and moves them to the
-trash afterwards.
+`npm run test:live` publishes a fixture tree to a real Confluence Cloud site. It reads
+`CONFLUENCE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` and `CONFLUENCE_SPACE_KEY` from
+`.env.test` or the environment. The test creates one temporary page at the top level of that space,
+outside the homepage tree, puts its pages under it, and moves only those pages to the trash
+afterwards.
 
 ## License
 
