@@ -40,7 +40,7 @@ export interface SourceOptions {
 	warn(message: string, file: string, line?: number): void;
 }
 
-export const folderBody = '<ac:structured-macro ac:name="children" />';
+const folderBody = '<ac:structured-macro ac:name="children" />';
 const maxImageWidth = 760;
 const maxTitleLength = 255;
 const anyScheme = /^[a-z][a-z0-9+.-]*:/i;
