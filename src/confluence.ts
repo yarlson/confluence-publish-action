@@ -20,11 +20,14 @@ const readConcurrency = 5;
 export class ConfluenceError extends Error {
 	/** The HTTP status, or null when no response arrived and the outcome is unknown. */
 	readonly status: number | null;
+	/** The request path relative to the base URL. */
+	readonly path: string;
 
-	constructor(message: string, status: number | null) {
+	constructor(message: string, status: number | null, path: string) {
 		super(message);
 		this.name = "ConfluenceError";
 		this.status = status;
+		this.path = path;
 	}
 }
 
@@ -355,7 +358,7 @@ export class Confluence {
 					continue;
 				}
 				const reason = error instanceof Error ? error.message : String(error);
-				throw new ConfluenceError(`${method} ${path} got no response: ${reason}`, null);
+				throw new ConfluenceError(`${method} ${path} got no response: ${reason}`, null, path);
 			}
 			if (response.ok) return response;
 
@@ -368,6 +371,7 @@ export class Confluence {
 			throw new ConfluenceError(
 				`${method} ${path} failed with ${response.status}: ${await errorDetail(response)}`,
 				response.status,
+				path,
 			);
 		}
 	}
