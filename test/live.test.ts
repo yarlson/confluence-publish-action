@@ -130,6 +130,11 @@ describe.skipIf(!live)("live Confluence Cloud", () => {
 		expect([undefined, "v2"]).toContain(editor);
 	});
 
+	it("finds a title holder whose title differs only in case", async () => {
+		const holders = await confluence.titleHolders(spaceId, [`intro ${suffix}`.toUpperCase()]);
+		expect(holders.get(`intro ${suffix}`)).toBe(await pageId(`Intro ${suffix}`));
+	});
+
 	it("lets a new page reuse the title of a page in the trash", async () => {
 		const page = {
 			spaceId,
