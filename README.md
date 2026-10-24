@@ -169,6 +169,10 @@ npm run check   # Biome, TypeScript and the tests
 npm run build   # writes dist/index.js, which must be committed
 ```
 
+Dependabot opens weekly update pull requests for npm packages and workflow actions, for versions
+at least 7 days old. An update of a runtime dependency changes `dist/index.js`, so CI fails on it
+until you run `npm run build` on its branch and commit the result.
+
 `npm run test:live` runs the action against a real Confluence Cloud site. It reads
 `CONFLUENCE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` and `CONFLUENCE_SPACE_KEY` from
 `.env.test` or the environment. It creates one temporary page at the top level of that space,
