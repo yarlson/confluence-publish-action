@@ -90,7 +90,7 @@ export function describe(step: Step): string {
 			return `create ${step.page.source} as "${step.page.title}"`;
 		case "adopt":
 			return step.reason === "legacy"
-				? `adopt ${step.page.source} (page ${step.target.id}, from confluence-markdown-sync-action)`
+				? `adopt ${step.page.source} (page ${step.target.id}, from its legacy filePath property)`
 				: `adopt ${step.page.source} (page ${step.target.id}, left by an interrupted run)`;
 		case "update": {
 			const why = {

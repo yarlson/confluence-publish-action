@@ -148,17 +148,6 @@ the published pages.
 - Confluence Data Center and Server do not work, because the action uses the Confluence Cloud REST
   API v2.
 
-## Moving from confluence-markdown-sync-action
-
-This action takes over the pages that `lokalise/confluence-markdown-sync-action` created. Their page
-IDs, comments and links stay.
-
-1. Change `uses:` to `yarlson/confluence-publish-action@v0.1.0`.
-2. Add `email`. Confluence Cloud accepts an API token only together with its account email.
-3. Remove `space-key` and `validate-only`. The root page sets the space, and `dry-run` checks the
-   setup.
-4. Run once with `dry-run: true`. The plan shows `adopt` for each existing page.
-
 ## Troubleshooting
 
 | Message | Cause and fix |

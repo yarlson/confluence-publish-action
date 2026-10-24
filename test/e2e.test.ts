@@ -199,7 +199,7 @@ describe("publish", () => {
 		expect(tree()).toEqual([{ Guides: ["Setup"] }, "Intro"]);
 	});
 
-	it("adopts pages from confluence-markdown-sync-action in place", async () => {
+	it("adopts legacy pages by their filePath property, in place", async () => {
 		const guides = fake.addPage({
 			title: "Guides",
 			parentId: fake.rootId,

@@ -103,7 +103,7 @@ describe("plan", () => {
 		).toEqual(["update a.md 1 drift"]);
 	});
 
-	it("adopts a page from confluence-markdown-sync-action by its filePath", () => {
+	it("adopts a legacy page by its filePath property", () => {
 		expect(
 			summary([want("a.md", "A")], remote([page("1", ROOT, "A", owner("a.md", null))])).steps,
 		).toEqual(["adopt a.md 1 legacy"]);

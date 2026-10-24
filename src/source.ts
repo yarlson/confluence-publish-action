@@ -283,7 +283,7 @@ function titleOf(page: TitledPage): string {
 	return `${page.folders.slice(page.folders.length - page.depth).join(" / ")} / ${page.base}`;
 }
 
-/** As confluence-markdown-sync-action did, so adopted folder pages keep their titles. */
+/** Lower-cases the rest of each word, so folder pages adopted by filePath keep their titles. */
 function titleCase(name: string): string {
 	const title = name
 		.replace(/[-_]/g, " ")

@@ -34,8 +34,8 @@ value `{"v": 1, "root": "<page id>", "source": "<path>", "digest": "<sha256>", "
   The author of the latest version comes with the bulk read, so this check costs no request. It also
   catches an edit that lands between the action's update and its version read.
 
-A page with only the `filePath` property from `confluence-markdown-sync-action` also counts as owned.
-The first run adopts it and writes the new property.
+A page with only a legacy `filePath` property also counts as owned. The first run adopts it and
+writes the new property.
 
 ## Order of writes
 

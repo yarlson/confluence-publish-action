@@ -1,11 +1,11 @@
 import type { DesiredPage } from "./source";
 
-/** The ownership property of a page that this action, or its predecessor, wrote. */
+/** The ownership property of a page, or a legacy `filePath` property. */
 export interface Owner {
 	source: string;
 	/** The root page that the property was written under; null for a legacy page. */
 	root: string | null;
-	/** Null for a page from confluence-markdown-sync-action, which stored only filePath. */
+	/** Null for a legacy page, which has only a filePath property. */
 	digest: string | null;
 	/** The page version after this action's last write; null for a legacy page. */
 	version: number | null;

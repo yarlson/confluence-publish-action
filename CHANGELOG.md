@@ -2,8 +2,7 @@
 
 ## 0.1.0 (2026-10-24)
 
-First release. It replaces `confluence-markdown-sync-action` and adopts the pages that action
-created.
+First release.
 
 - Publishes a folder of GitHub Flavored Markdown as a Confluence Cloud page tree with REST API v2.
 - Plans every write before the first one. `dry-run` prints the same plan that a real run executes.
@@ -16,6 +15,4 @@ created.
 - Converts relative links to other published files into page links, and uploads local images as
   attachments only when they change.
 - Moves deleted pages to the trash, children first, and refuses to run on a folder without Markdown.
-- Requires `email`. Removes the `space-key` and `validate-only` inputs.
-- Matches `exclude-patterns` across dot folders. Files that confluence-markdown-sync-action published
-  from an excluded dot folder, such as `node_modules/.pnpm`, are moved to the trash on the first run.
+- Matches `exclude-patterns` across dot folders, such as `node_modules/.pnpm`.

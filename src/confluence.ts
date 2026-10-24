@@ -4,7 +4,7 @@ import type { Attachment } from "./source";
 
 /** The content property that marks a page as published by this action. */
 export const OWNER_KEY = "confluence-publish-action";
-/** The property that confluence-markdown-sync-action wrote. */
+/** A legacy ownership property that holds only the source path. */
 const LEGACY_KEY = "filePath";
 const HASH_COMMENT = "sha256:";
 
@@ -317,7 +317,7 @@ export class Confluence {
 				property: { id: own.id, version: own.version.number },
 			};
 		}
-		// The predecessor wrote native paths, so a run on Windows stored "\\" separators.
+		// Legacy values are native paths, so a run on Windows stored "\\" separators.
 		const legacy = properties.find((p) => p.key === LEGACY_KEY)?.value;
 		const source = typeof legacy === "string" ? legacy.replaceAll("\\", "/") : undefined;
 		if (isSource(source))
