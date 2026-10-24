@@ -145,6 +145,14 @@ describe("run", () => {
 		expect(process.exitCode).toBeUndefined();
 	});
 
+	it("keeps an untrusted line break out of workflow commands and the job summary", async () => {
+		await writeFile(join(dir, "docs/x\n::notice::injected.md"), "text");
+		await run();
+		expect(stdout.join("")).toContain('create x ::notice::injected.md as "x ::notice::injected"');
+		expect(stdout.join("")).not.toMatch(/^::notice::/m);
+		expect(await readFile(summaryFile, "utf8")).toContain("<td>x ::notice::injected.md</td>");
+	});
+
 	it("explains a root page that does not exist", async () => {
 		vi.stubEnv("INPUT_ROOT-PAGE-ID", "999");
 		await run();

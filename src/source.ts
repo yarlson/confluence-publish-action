@@ -235,7 +235,8 @@ function uniqueTitles(entries: Entry[], docs: Map<string, Document>): Map<string
 		source: entry.source,
 		base: entry.folder
 			? titleCase(entry.name)
-			: (docs.get(entry.source)?.title ?? entry.name.slice(0, -".md".length)),
+			: (docs.get(entry.source)?.title ??
+				(entry.name.slice(0, -".md".length).replace(/\s+/g, " ").trim() || entry.name)),
 		folders: entry.source.split("/").slice(0, -1).map(titleCase),
 		depth: 0,
 	}));

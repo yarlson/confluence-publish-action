@@ -33009,7 +33009,7 @@ async function scan(dir, prefix, exclude, skipped) {
 function uniqueTitles(entries, docs) {
   const pages = entries.map((entry) => ({
     source: entry.source,
-    base: entry.folder ? titleCase(entry.name) : docs.get(entry.source)?.title ?? entry.name.slice(0, -".md".length),
+    base: entry.folder ? titleCase(entry.name) : docs.get(entry.source)?.title ?? (entry.name.slice(0, -".md".length).replace(/\s+/g, " ").trim() || entry.name),
     folders: entry.source.split("/").slice(0, -1).map(titleCase),
     depth: 0
   }));
@@ -33177,7 +33177,8 @@ async function run() {
     config = readConfig();
     const report = await publish(config, {
       log: {
-        info,
+        // core.info writes raw text, and a line that starts with "::" is a workflow command.
+        info: (message) => info(message.replace(/[\r\n]+/g, " ")),
         warning: (message, at) => warning(message, at && { file: at.file, startLine: at.line })
       }
     });
@@ -33238,7 +33239,7 @@ async function writeSummary(report) {
   ]).write();
 }
 function escapeHtml(text4) {
-  return text4.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return text4.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/[\r\n]+/g, " ");
 }
 
 // src/index.ts

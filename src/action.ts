@@ -53,7 +53,8 @@ export async function run(): Promise<void> {
 		config = readConfig();
 		const report = await publish(config, {
 			log: {
-				info: core.info,
+				// core.info writes raw text, and a line that starts with "::" is a workflow command.
+				info: (message) => core.info(message.replace(/[\r\n]+/g, " ")),
 				warning: (message, at) =>
 					core.warning(message, at && { file: at.file, startLine: at.line }),
 			},
@@ -130,5 +131,6 @@ function escapeHtml(text: string): string {
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
+		.replace(/"/g, "&quot;")
+		.replace(/[\r\n]+/g, " ");
 }
