@@ -1,4 +1,4 @@
-import type { Confluence } from "./confluence";
+import { type Confluence, PENDING_DIGEST } from "./confluence";
 import type { Owner, Step } from "./plan";
 import type { DesiredPage } from "./source";
 
@@ -21,7 +21,7 @@ export interface Applied {
 /**
  * Runs the steps in order and stops at the first failure. Every page write ends with the ownership
  * property, after the body and the attachments. A failure before that leaves a page that the next
- * plan updates again or adopts; it never leaves a page that claims to be current.
+ * plan updates again; it never leaves a page that claims to be current.
  */
 export async function apply(steps: Step[], target: Target): Promise<Applied> {
 	const { confluence } = target;
@@ -40,11 +40,8 @@ export async function apply(steps: Step[], target: Target): Promise<Applied> {
 	const finish = async (id: string, page: DesiredPage, property: Owner["property"]) => {
 		await confluence.syncAttachments(id, page.attachments);
 		const version = await confluence.pageVersion(id);
-		await confluence.writeOwner(
-			id,
-			{ source: page.source, digest: page.digest, version },
-			property,
-		);
+		const value = { root: target.rootId, source: page.source, digest: page.digest, version };
+		await confluence.writeOwner(id, value, property);
 	};
 
 	const done: Step[] = [];
@@ -54,7 +51,11 @@ export async function apply(steps: Step[], target: Target): Promise<Applied> {
 				case "create": {
 					const id = await create(step.page, parentId(step.page), target);
 					pageIds.set(step.page.source, id);
-					await finish(id, step.page, null);
+					// Owned from now on, so a run that stops here leaves a page the next plan updates,
+					// whatever happens to its title or folder in between.
+					const pending = { root: target.rootId, source: step.page.source, digest: PENDING_DIGEST };
+					const property = await confluence.writeOwner(id, { ...pending, version: 0 }, null);
+					await finish(id, step.page, property);
 					break;
 				}
 				case "adopt":

@@ -19786,6 +19786,7 @@ var ConfluenceError = class extends Error {
     this.path = path3;
   }
 };
+var PENDING_DIGEST = "pending";
 var Confluence = class {
   #base;
   #authorization;
@@ -19802,7 +19803,11 @@ var Confluence = class {
   async readRemote(rootId) {
     const root = await this.#json("GET", `/api/v2/pages/${rootId}`);
     const user = await this.#json("GET", "/rest/api/user/current");
-    const tree = await this.#descendants(rootId);
+    if (typeof user.accountId !== "string" || user.accountId === "") {
+      throw new Error("GET /rest/api/user/current returned no accountId");
+    }
+    const nodes2 = await this.#descendants(rootId);
+    const tree = nodes2.filter((node3) => node3.type === "page");
     const details = /* @__PURE__ */ new Map();
     for (let i = 0; i < tree.length; i += pageSize) {
       const ids = tree.slice(i, i + pageSize).map((page) => page.id);
@@ -19823,6 +19828,7 @@ var Confluence = class {
           title: page.title,
           version: detail.version.number,
           authorId: detail.authorId,
+          editorId: detail.version.authorId,
           owner: owners[i] ?? null
         }
       ];
@@ -19832,7 +19838,8 @@ var Confluence = class {
       accountId: user.accountId,
       spaceId: root.spaceId,
       webBase: root._links.base ?? this.#base,
-      pages
+      pages,
+      nodes: nodes2.map(({ id, parentId }) => ({ id, parentId }))
     };
   }
   /** Maps each lower-case title to the ID of a page in the space that has it. */
@@ -19862,6 +19869,7 @@ var Confluence = class {
         parentId: page.parentId,
         body: { representation: "storage", value: page.body }
       });
+      if (typeof created.id !== "string") throw new Error("POST /api/v2/pages returned no page ID");
       return created.id;
     } catch (error2) {
       if (error2 instanceof ConfluenceError && error2.status === null) return null;
@@ -19882,24 +19890,18 @@ var Confluence = class {
   async pageVersion(id) {
     return (await this.#json("GET", `/api/v2/pages/${id}`)).version.number;
   }
+  /** Creates or updates the ownership property and returns it, for the next update. */
   async writeOwner(pageId, value2, property) {
     const body = { key: OWNER_KEY, value: { v: 1, ...value2 } };
-    if (property) {
-      await this.#request("PUT", `/api/v2/pages/${pageId}/properties/${property.id}`, {
-        ...body,
-        version: { number: property.version + 1 }
-      });
-    } else {
-      await this.#request("POST", `/api/v2/pages/${pageId}/properties`, body);
-    }
+    const written = property ? await this.#json("PUT", `/api/v2/pages/${pageId}/properties/${property.id}`, {
+      ...body,
+      version: { number: property.version + 1 }
+    }) : await this.#json("POST", `/api/v2/pages/${pageId}/properties`, body);
+    return { id: written.id, version: written.version.number };
   }
-  /** Moves the page to the trash. A page that is already gone counts as deleted. */
+  /** Moves the page to the trash. */
   async deletePage(id) {
-    try {
-      await this.#request("DELETE", `/api/v2/pages/${id}`);
-    } catch (error2) {
-      if (!(error2 instanceof ConfluenceError && error2.status === 404)) throw error2;
-    }
+    await this.#request("DELETE", `/api/v2/pages/${id}`);
   }
   /**
    * Makes the page's attachments match `wanted`. Each upload carries its hash in the comment, so
@@ -19930,20 +19932,20 @@ var Confluence = class {
     }
     return { uploaded, deleted: stale.length };
   }
+  /** Every item under the page, of every type. Only pages are queried again below depth 10. */
   async #descendants(rootId) {
-    const pages = [];
+    const items = [];
     const queue = [rootId];
     for (let id = queue.shift(); id !== void 0; id = queue.shift()) {
       const found = await this.#all(
         `/api/v2/pages/${id}/descendants?depth=${maxDepth}&limit=${pageSize}`
       );
       for (const item of found) {
-        if (item.type !== "page") continue;
-        pages.push(item);
-        if (item.depth === maxDepth) queue.push(item.id);
+        items.push(item);
+        if (item.type === "page" && item.depth === maxDepth) queue.push(item.id);
       }
     }
-    return pages;
+    return items;
   }
   async #owner(pageId) {
     const properties = await this.#all(
@@ -19952,22 +19954,23 @@ var Confluence = class {
     const own5 = properties.find((p) => p.key === OWNER_KEY);
     if (own5) {
       const value2 = own5.value;
-      if (value2?.v !== 1 || typeof value2.source !== "string" || typeof value2.digest !== "string" || typeof value2.version !== "number") {
+      if (value2?.v !== 1 || typeof value2.root !== "string" || !isSource(value2.source) || typeof value2.digest !== "string" || typeof value2.version !== "number") {
         throw new Error(
           `Page ${pageId} has an invalid ${OWNER_KEY} property: ${JSON.stringify(own5.value)}. Delete the property or the page in Confluence.`
         );
       }
       return {
         source: value2.source,
+        root: value2.root,
         digest: value2.digest,
         version: value2.version,
         property: { id: own5.id, version: own5.version.number }
       };
     }
-    const legacy = properties.find((p) => p.key === LEGACY_KEY);
-    if (typeof legacy?.value === "string") {
-      return { source: legacy.value, digest: null, version: null, property: null };
-    }
+    const legacy = properties.find((p) => p.key === LEGACY_KEY)?.value;
+    const source = typeof legacy === "string" ? legacy.replaceAll("\\", "/") : void 0;
+    if (isSource(source))
+      return { source, root: null, digest: null, version: null, property: null };
     return null;
   }
   /** Reads every result page of a list endpoint. */
@@ -20017,6 +20020,7 @@ var Confluence = class {
         throw new ConfluenceError(`${method} ${path3} got no response: ${reason}`, null, path3);
       }
       if (response.ok) return response;
+      if (method === "DELETE" && response.status === 404) return response;
       const retry = response.status === 429 || repeatable && response.status >= 500;
       if (retry && attempt < maxAttempts) {
         await response.body?.cancel();
@@ -20041,6 +20045,10 @@ var Confluence = class {
     return this.#backoff(attempt);
   }
 };
+var controlCharacter = /[\u0000-\u001f]/;
+function isSource(value2) {
+  return typeof value2 === "string" && value2 !== "" && !value2.startsWith("/") && !controlCharacter.test(value2);
+}
 async function errorDetail(response) {
   const text4 = await response.text();
   try {
@@ -20080,11 +20088,8 @@ async function apply(steps, target) {
   const finish = async (id, page, property) => {
     await confluence.syncAttachments(id, page.attachments);
     const version = await confluence.pageVersion(id);
-    await confluence.writeOwner(
-      id,
-      { source: page.source, digest: page.digest, version },
-      property
-    );
+    const value2 = { root: target.rootId, source: page.source, digest: page.digest, version };
+    await confluence.writeOwner(id, value2, property);
   };
   const done = [];
   for (const step of steps) {
@@ -20093,7 +20098,9 @@ async function apply(steps, target) {
         case "create": {
           const id = await create(step.page, parentId(step.page), target);
           pageIds.set(step.page.source, id);
-          await finish(id, step.page, null);
+          const pending = { root: target.rootId, source: step.page.source, digest: PENDING_DIGEST };
+          const property = await confluence.writeOwner(id, { ...pending, version: 0 }, null);
+          await finish(id, step.page, property);
           break;
         }
         case "adopt":
@@ -20137,31 +20144,31 @@ async function create(page, parentId, target) {
 }
 
 // src/plan.ts
-function newTitles(desired, remote) {
+function titlesToCheck(desired, remote) {
   const { matches } = matchPages(desired, remote);
-  return desired.filter((page) => matches.get(page.source)?.kind === "new").map((p) => p.title);
+  return desired.filter((page) => {
+    const match2 = matches.get(page.source);
+    return match2?.kind === "new" || match2 && !sameTitle(match2.target.title, page.title);
+  }).map((page) => page.title);
 }
 function plan(desired, remote, titleHolders) {
   const { matches, errors } = matchPages(desired, remote);
   const matched = new Set(
     [...matches.values()].flatMap((match2) => match2.kind === "new" ? [] : [match2.target.id])
   );
-  const unmatched = remote.pages.filter((page) => page.owner && !matched.has(page.id));
-  const deleted = deletable(unmatched, remote.pages);
-  const byId = new Map(remote.pages.map((page) => [page.id, page]));
-  const depth = (page) => {
-    const parent = byId.get(page.parentId);
-    return parent ? depth(parent) + 1 : 0;
+  const unmatched = remote.pages.filter((page) => ownerOf(page, remote) && !matched.has(page.id));
+  const deleted = deletable(unmatched, remote);
+  const parents = new Map(remote.nodes.map((node3) => [node3.id, node3.parentId]));
+  const depth = (id) => {
+    const parent = parents.get(id);
+    return parent === void 0 ? 0 : depth(parent) + 1;
   };
-  const deletes = unmatched.filter((page) => deleted.has(page.id)).sort((a, b) => depth(b) - depth(a)).map((target) => ({ kind: "delete", target }));
-  const keeps = unmatched.filter((page) => !deleted.has(page.id)).map((target) => ({ kind: "keep", target }));
-  const freed = new Set(deleted);
-  for (const page of desired) {
-    const match2 = matches.get(page.source);
-    if (match2 && match2.kind !== "new" && !sameTitle(match2.target.title, page.title)) {
-      freed.add(match2.target.id);
-    }
-  }
+  const deletes = unmatched.filter((page) => deleted.has(page.id)).sort((a, b) => depth(b.id) - depth(a.id)).map((target) => ({ kind: "delete", target }));
+  const keeps = unmatched.filter((page) => !deleted.has(page.id)).map((target) => ({
+    kind: "keep",
+    target,
+    reason: target.authorId === remote.accountId ? "children" : "author"
+  }));
   const early = [];
   const creates = [];
   const late = [];
@@ -20169,46 +20176,49 @@ function plan(desired, remote, titleHolders) {
   for (const page of desired) {
     const match2 = matches.get(page.source);
     if (match2.kind === "new") {
-      const holder = titleHolders.get(page.title.toLowerCase());
-      if (holder !== void 0 && !freed.has(holder)) {
-        errors.push(
-          `Cannot create "${page.title}" for ${page.file}: page ${holder} in the space already has this title.`
-        );
-      }
       creates.push({ kind: "create", page });
       created.add(page.source);
       continue;
     }
-    const step = existingStep(page, match2, parentIdOf(page, matches, remote.rootId));
+    const step = existingStep(page, match2, parentIdOf(page, matches, remote.rootId), remote);
     const parentIsNew = page.parentSource !== null && created.has(page.parentSource);
     (parentIsNew ? late : early).push(step);
   }
-  return { steps: [...deletes, ...early, ...creates, ...late, ...keeps], errors };
+  const holderOf = (title) => remote.pages.find((page) => sameTitle(page.title, title))?.id ?? titleHolders.get(title.toLowerCase());
+  const ordered = [...deletes, ...orderRenames(early, holderOf), ...creates, ...late];
+  errors.push(...titleConflicts(ordered, holderOf));
+  return { steps: [...ordered, ...keeps], errors };
+}
+function ownerOf(page, remote) {
+  const owner = page.owner;
+  if (!owner || owner.root === null || owner.root === remote.rootId) return owner;
+  return remote.nodes.some((node3) => node3.id === owner.root) ? null : owner;
 }
 function matchPages(desired, remote) {
   const errors = [];
   const bySource = /* @__PURE__ */ new Map();
   for (const page of remote.pages) {
-    if (!page.owner) continue;
-    const other = bySource.get(page.owner.source);
+    const owner = ownerOf(page, remote);
+    if (!owner) continue;
+    const other = bySource.get(owner.source);
     if (other) {
       errors.push(
-        `Pages ${other.id} and ${page.id} both belong to ${page.owner.source}. Move one of them to the trash in Confluence.`
+        `Pages ${other.page.id} and ${page.id} both belong to ${owner.source}. Move one of them to the trash in Confluence.`
       );
       continue;
     }
-    bySource.set(page.owner.source, page);
+    bySource.set(owner.source, { page, owner });
   }
   const matches = /* @__PURE__ */ new Map();
   const claimed = /* @__PURE__ */ new Set();
   for (const page of desired) {
     const owned = bySource.get(page.source);
-    if (owned?.owner) {
+    if (owned) {
       matches.set(
         page.source,
-        owned.owner.digest === null ? { kind: "legacy", target: owned } : { kind: "owned", target: owned, owner: owned.owner }
+        owned.owner.digest === null ? { kind: "legacy", target: owned.page } : { kind: "owned", target: owned.page, owner: owned.owner }
       );
-      claimed.add(owned.id);
+      claimed.add(owned.page.id);
       continue;
     }
     const parentId = parentIdOf(page, matches, remote.rootId);
@@ -20229,20 +20239,22 @@ function parentIdOf(page, matches, rootId) {
   const parent = matches.get(page.parentSource);
   return parent && parent.kind !== "new" ? parent.target.id : void 0;
 }
-function existingStep(page, match2, parentId) {
+function existingStep(page, match2, parentId, remote) {
   const { target } = match2;
   if (match2.kind !== "owned") return { kind: "adopt", page, target, reason: match2.kind };
-  if (match2.owner.digest !== page.digest)
+  if (match2.owner.digest !== page.digest) {
     return { kind: "update", page, target, reason: "content" };
-  if (target.parentId !== parentId) return { kind: "update", page, target, reason: "parent" };
-  if (match2.owner.version !== null && match2.owner.version !== target.version) {
-    return { kind: "update", page, target, reason: "drift" };
   }
+  if (target.parentId !== parentId) return { kind: "update", page, target, reason: "parent" };
+  const edited = match2.owner.version !== null && match2.owner.version !== target.version || target.editorId !== remote.accountId;
+  if (edited) return { kind: "update", page, target, reason: "drift" };
   return { kind: "skip", page, target };
 }
-function deletable(unmatched, pages) {
-  const children = Map.groupBy(pages, (page) => page.parentId);
-  const ids = new Set(unmatched.map((page) => page.id));
+function deletable(unmatched, remote) {
+  const children = Map.groupBy(remote.nodes, (node3) => node3.parentId);
+  const ids = new Set(
+    unmatched.filter((page) => page.authorId === remote.accountId).map((page) => page.id)
+  );
   let changed = true;
   while (changed) {
     changed = false;
@@ -20254,6 +20266,49 @@ function deletable(unmatched, pages) {
     }
   }
   return ids;
+}
+function renames(step) {
+  return !sameTitle(step.target.title, step.page.title);
+}
+function orderRenames(steps, holderOf) {
+  const blocker = (step) => {
+    if (!renames(step)) return void 0;
+    const holder = holderOf(step.page.title);
+    return steps.find((other) => other !== step && other.target.id === holder && renames(other));
+  };
+  const remaining = [...steps];
+  const ordered = [];
+  while (remaining.length > 0) {
+    const ready = remaining.findIndex((step) => {
+      const before = blocker(step);
+      return before === void 0 || !remaining.includes(before);
+    });
+    ordered.push(...remaining.splice(ready === -1 ? 0 : ready, 1));
+  }
+  return ordered;
+}
+function titleConflicts(ordered, holderOf) {
+  const errors = [];
+  const freed = /* @__PURE__ */ new Set();
+  const renamed = new Set(
+    ordered.flatMap(
+      (step) => "page" in step && step.kind !== "create" && renames(step) ? [step.target.id] : []
+    )
+  );
+  for (const step of ordered) {
+    if (step.kind === "delete") freed.add(step.target.id);
+    if (step.kind === "delete" || step.kind === "keep") continue;
+    const current = step.kind === "create" ? void 0 : step.target;
+    if (current && !renames(step)) continue;
+    const holder = holderOf(step.page.title);
+    if (holder !== void 0 && holder !== current?.id && !freed.has(holder)) {
+      errors.push(
+        renamed.has(holder) ? `Cannot give ${step.page.file} the title "${step.page.title}": page ${holder} has it and takes a title from this page. Rename one of the two files in a separate change.` : `Cannot give ${step.page.file} the title "${step.page.title}": page ${holder} in the space already has it.`
+      );
+    }
+    if (current) freed.add(current.id);
+  }
+  return errors;
 }
 function sameTitle(a, b) {
   return a.toLowerCase() === b.toLowerCase();
@@ -33036,7 +33091,7 @@ async function publish(config, { log, fetch: fetch2, sleep }) {
     sleep
   });
   const remote = await confluence.readRemote(config.rootPageId);
-  const holders = await confluence.titleHolders(remote.spaceId, newTitles(desired, remote));
+  const holders = await confluence.titleHolders(remote.spaceId, titlesToCheck(desired, remote));
   const { steps, errors } = plan(desired, remote, holders);
   if (errors.length > 0) {
     throw new Error(
@@ -33077,7 +33132,7 @@ function describe(step) {
     case "delete":
       return `delete ${step.target.owner?.source} (page ${step.target.id})`;
     case "keep":
-      return `keep ${step.target.owner?.source} (page ${step.target.id}): no file asks for it, but it still has child pages`;
+      return step.reason === "children" ? `keep ${step.target.owner?.source} (page ${step.target.id}): no file asks for it, but it still has child pages` : `keep ${step.target.owner?.source} (page ${step.target.id}): no file asks for it, but another account created it`;
   }
 }
 

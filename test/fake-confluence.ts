@@ -32,7 +32,12 @@ export interface FakePage {
 	title: string;
 	body: string;
 	version: number;
+	/** The account that created the page. */
 	authorId: string;
+	/** The account that wrote the latest version; tests set it to simulate a person's edit. */
+	editorId: string;
+	/** Confluence also lists folders, whiteboards and others under a page. */
+	type: "page" | "folder";
 	status: "current" | "trashed";
 	properties: FakeProperty[];
 	attachments: FakeAttachment[];
@@ -64,6 +69,7 @@ export class FakeConfluence {
 		title: string;
 		parentId: string | null;
 		authorId?: string;
+		type?: FakePage["type"];
 		properties?: Record<string, unknown>;
 	}): string {
 		const id = this.#id();
@@ -74,6 +80,8 @@ export class FakeConfluence {
 			body: "",
 			version: 1,
 			authorId: page.authorId ?? ACCOUNT,
+			editorId: page.authorId ?? ACCOUNT,
+			type: page.type ?? "page",
 			status: "current",
 			properties: Object.entries(page.properties ?? {}).map(([key, value]) => ({
 				id: this.#id(),
@@ -205,7 +213,7 @@ export class FakeConfluence {
 	}
 
 	#listPages(query: URLSearchParams): Response {
-		let pages = this.current();
+		let pages = this.current().filter((page) => page.type === "page");
 		const ids = query.get("id");
 		if (ids) pages = pages.filter((page) => ids.split(",").includes(page.id));
 		const title = query.get("title");
@@ -257,6 +265,7 @@ export class FakeConfluence {
 		page.body = body.body?.value ?? "";
 		page.parentId = body.parentId ?? page.parentId;
 		page.version++;
+		page.editorId = ACCOUNT;
 		return json(200, this.#pageJson(page));
 	}
 
@@ -282,7 +291,7 @@ export class FakeConfluence {
 			id: page.id,
 			status: page.status,
 			title: page.title,
-			type: "page",
+			type: page.type,
 			parentId: page.parentId,
 			depth: level,
 		}));
@@ -313,8 +322,9 @@ export class FakeConfluence {
 			if (page.properties.some((p) => p.key === body.key)) {
 				return json(409, { message: "Property key already exists" });
 			}
-			page.properties.push({ id: this.#id(), key: body.key, value: body.value, version: 1 });
-			return json(200, {});
+			const created = { id: this.#id(), key: body.key, value: body.value, version: 1 };
+			page.properties.push(created);
+			return json(200, { ...created, version: { number: 1 } });
 		}
 		const property = page.properties.find((p) => p.id === propertyId);
 		if (method === "PUT" && property) {
@@ -323,7 +333,7 @@ export class FakeConfluence {
 			}
 			property.value = body.value;
 			property.version++;
-			return json(200, {});
+			return json(200, { ...property, version: { number: property.version } });
 		}
 		return json(404, { message: "Property not found" });
 	}
@@ -352,13 +362,16 @@ export class FakeConfluence {
 				status: "current",
 			});
 		}
-		if (this.uploadBumpsVersion) page.version++;
+		if (this.uploadBumpsVersion) {
+			page.version++;
+			page.editorId = ACCOUNT;
+		}
 		return json(200, { results: [] });
 	}
 
 	#currentPage(id: string): FakePage | undefined {
 		const page = this.pages.get(id);
-		return page?.status === "current" ? page : undefined;
+		return page?.status === "current" && page.type === "page" ? page : undefined;
 	}
 
 	#titleTaken(title: string, exceptId?: string): boolean {
@@ -375,7 +388,7 @@ export class FakeConfluence {
 			spaceId: SPACE,
 			parentId: page.parentId,
 			authorId: page.authorId,
-			version: { number: page.version },
+			version: { number: page.version, authorId: page.editorId },
 			_links: { base: BASE_URL, webui: `/spaces/DOCS/pages/${page.id}` },
 		};
 	}

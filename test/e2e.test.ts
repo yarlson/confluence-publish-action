@@ -163,6 +163,35 @@ describe("publish", () => {
 		expect(fake.current().filter((p) => p.title === "Guides")).toHaveLength(1);
 	});
 
+	it("finishes an interrupted create on the next run, even after the title changed", async () => {
+		fake.failNext(
+			(method, path) => method === "PUT" && path.endsWith("/child/attachment"),
+			"network",
+		);
+		const failed = await run();
+		expect(failed.applied?.error).toBeDefined();
+		await files({ "docs/guides/setup.md": "# Installation\n\n![logo](img/logo.png)" });
+
+		const report = await run();
+		expect(report.applied?.error).toBeUndefined();
+		expect(tree()).toEqual([{ Guides: ["Installation"] }, "Intro"]);
+		expect(stepKinds(await run())).toEqual(["skip", "skip", "skip"]);
+	});
+
+	it("leaves alone the pages of a configuration whose root is inside this tree", async () => {
+		await run();
+		const teamB = fake.addPage({ title: "Team B", parentId: fake.rootId, authorId: "a-person" });
+		const other = await realpath(await mkdtemp(join(tmpdir(), "e2e-other-")));
+		await mkdir(join(other, "docs"));
+		await writeFile(join(other, "docs/b.md"), "# B page");
+		await run({ rootPageId: teamB, workspace: other });
+
+		const report = await run();
+		expect(stepKinds(report)).toEqual(["skip", "skip", "skip"]);
+		expect(fake.childrenOf(teamB).map((page) => page.title)).toEqual(["B page"]);
+		await rm(other, { recursive: true, force: true });
+	});
+
 	it("finds a page whose create response was lost, without a duplicate", async () => {
 		fake.failNext((method, path) => method === "POST" && path === "/api/v2/pages", "lost");
 		const report = await run();

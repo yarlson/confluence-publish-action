@@ -32,10 +32,14 @@ export class ConfluenceError extends Error {
 }
 
 export interface OwnerValue {
+	root: string;
 	source: string;
 	digest: string;
 	version: number;
 }
+
+/** The digest of a page whose create finished before its body was confirmed; matches no page. */
+export const PENDING_DIGEST = "pending";
 
 export interface ConfluenceOptions {
 	/** Site or gateway URL ending in /wiki. */
@@ -54,7 +58,7 @@ interface PageJson {
 	spaceId: string;
 	parentId: string;
 	authorId: string;
-	version: { number: number };
+	version: { number: number; authorId: string };
 	_links: { base?: string; webui?: string };
 }
 
@@ -109,8 +113,12 @@ export class Confluence {
 
 	async readRemote(rootId: string): Promise<Remote & { spaceId: string; webBase: string }> {
 		const root = await this.#json<PageJson>("GET", `/api/v2/pages/${rootId}`);
-		const user = await this.#json<{ accountId: string }>("GET", "/rest/api/user/current");
-		const tree = await this.#descendants(rootId);
+		const user = await this.#json<{ accountId?: unknown }>("GET", "/rest/api/user/current");
+		if (typeof user.accountId !== "string" || user.accountId === "") {
+			throw new Error("GET /rest/api/user/current returned no accountId");
+		}
+		const nodes = await this.#descendants(rootId);
+		const tree = nodes.filter((node) => node.type === "page");
 
 		const details = new Map<string, PageJson>();
 		for (let i = 0; i < tree.length; i += pageSize) {
@@ -133,6 +141,7 @@ export class Confluence {
 					title: page.title,
 					version: detail.version.number,
 					authorId: detail.authorId,
+					editorId: detail.version.authorId,
 					owner: owners[i] ?? null,
 				},
 			];
@@ -143,6 +152,7 @@ export class Confluence {
 			spaceId: root.spaceId,
 			webBase: root._links.base ?? this.#base,
 			pages,
+			nodes: nodes.map(({ id, parentId }) => ({ id, parentId })),
 		};
 	}
 
@@ -180,6 +190,7 @@ export class Confluence {
 				parentId: page.parentId,
 				body: { representation: "storage", value: page.body },
 			});
+			if (typeof created.id !== "string") throw new Error("POST /api/v2/pages returned no page ID");
 			return created.id;
 		} catch (error) {
 			if (error instanceof ConfluenceError && error.status === null) return null;
@@ -209,25 +220,25 @@ export class Confluence {
 		return (await this.#json<PageJson>("GET", `/api/v2/pages/${id}`)).version.number;
 	}
 
-	async writeOwner(pageId: string, value: OwnerValue, property: Owner["property"]): Promise<void> {
+	/** Creates or updates the ownership property and returns it, for the next update. */
+	async writeOwner(
+		pageId: string,
+		value: OwnerValue,
+		property: Owner["property"],
+	): Promise<NonNullable<Owner["property"]>> {
 		const body = { key: OWNER_KEY, value: { v: 1, ...value } };
-		if (property) {
-			await this.#request("PUT", `/api/v2/pages/${pageId}/properties/${property.id}`, {
-				...body,
-				version: { number: property.version + 1 },
-			});
-		} else {
-			await this.#request("POST", `/api/v2/pages/${pageId}/properties`, body);
-		}
+		const written = property
+			? await this.#json<PropertyJson>("PUT", `/api/v2/pages/${pageId}/properties/${property.id}`, {
+					...body,
+					version: { number: property.version + 1 },
+				})
+			: await this.#json<PropertyJson>("POST", `/api/v2/pages/${pageId}/properties`, body);
+		return { id: written.id, version: written.version.number };
 	}
 
-	/** Moves the page to the trash. A page that is already gone counts as deleted. */
+	/** Moves the page to the trash. */
 	async deletePage(id: string): Promise<void> {
-		try {
-			await this.#request("DELETE", `/api/v2/pages/${id}`);
-		} catch (error) {
-			if (!(error instanceof ConfluenceError && error.status === 404)) throw error;
-		}
+		await this.#request("DELETE", `/api/v2/pages/${id}`);
 	}
 
 	/**
@@ -264,20 +275,20 @@ export class Confluence {
 		return { uploaded, deleted: stale.length };
 	}
 
+	/** Every item under the page, of every type. Only pages are queried again below depth 10. */
 	async #descendants(rootId: string): Promise<DescendantJson[]> {
-		const pages: DescendantJson[] = [];
+		const items: DescendantJson[] = [];
 		const queue = [rootId];
 		for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
 			const found = await this.#all<DescendantJson>(
 				`/api/v2/pages/${id}/descendants?depth=${maxDepth}&limit=${pageSize}`,
 			);
 			for (const item of found) {
-				if (item.type !== "page") continue;
-				pages.push(item);
-				if (item.depth === maxDepth) queue.push(item.id);
+				items.push(item);
+				if (item.type === "page" && item.depth === maxDepth) queue.push(item.id);
 			}
 		}
-		return pages;
+		return items;
 	}
 
 	async #owner(pageId: string): Promise<Owner | null> {
@@ -289,7 +300,8 @@ export class Confluence {
 			const value = own.value as Partial<Record<keyof OwnerValue | "v", unknown>> | null;
 			if (
 				value?.v !== 1 ||
-				typeof value.source !== "string" ||
+				typeof value.root !== "string" ||
+				!isSource(value.source) ||
 				typeof value.digest !== "string" ||
 				typeof value.version !== "number"
 			) {
@@ -299,15 +311,17 @@ export class Confluence {
 			}
 			return {
 				source: value.source,
+				root: value.root,
 				digest: value.digest,
 				version: value.version,
 				property: { id: own.id, version: own.version.number },
 			};
 		}
-		const legacy = properties.find((p) => p.key === LEGACY_KEY);
-		if (typeof legacy?.value === "string") {
-			return { source: legacy.value, digest: null, version: null, property: null };
-		}
+		// The predecessor wrote native paths, so a run on Windows stored "\\" separators.
+		const legacy = properties.find((p) => p.key === LEGACY_KEY)?.value;
+		const source = typeof legacy === "string" ? legacy.replaceAll("\\", "/") : undefined;
+		if (isSource(source))
+			return { source, root: null, digest: null, version: null, property: null };
 		return null;
 	}
 
@@ -361,6 +375,8 @@ export class Confluence {
 				throw new ConfluenceError(`${method} ${path} got no response: ${reason}`, null, path);
 			}
 			if (response.ok) return response;
+			// The resource is gone, which is what a DELETE asks for, also after a lost response.
+			if (method === "DELETE" && response.status === 404) return response;
 
 			const retry = response.status === 429 || (repeatable && response.status >= 500);
 			if (retry && attempt < maxAttempts) {
@@ -387,6 +403,19 @@ export class Confluence {
 		}
 		return this.#backoff(attempt);
 	}
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+const controlCharacter = /[\u0000-\u001f]/;
+
+/** A relative path without control characters; anything else in Confluence is not a source. */
+function isSource(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value !== "" &&
+		!value.startsWith("/") &&
+		!controlCharacter.test(value)
+	);
 }
 
 async function errorDetail(response: Response): Promise<string> {

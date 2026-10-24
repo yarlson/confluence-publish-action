@@ -93,6 +93,19 @@ describe("errors", () => {
 		);
 	});
 
+	it("treats a delete of an attachment that is already gone as done", async () => {
+		fake.failNext((method) => method === "DELETE", { status: 404 });
+		const id = fake.addPage({ title: "A", parentId: fake.rootId });
+		fake.pages.get(id)?.attachments.push({
+			id: "att1",
+			title: "old.png",
+			comment: "sha256:x",
+			bytes: new Uint8Array(),
+			status: "current",
+		});
+		await expect(client().syncAttachments(id, [])).resolves.toEqual({ uploaded: 0, deleted: 1 });
+	});
+
 	it("treats a delete of a page that is already gone as done", async () => {
 		const id = fake.addPage({ title: "A", parentId: fake.rootId });
 		await client().deletePage(id);
@@ -123,14 +136,17 @@ describe("readRemote", () => {
 		const owned = fake.addPage({
 			title: "Owned",
 			parentId: fake.rootId,
-			properties: { [OWNER_KEY]: { v: 1, source: "a.md", digest: "abc", version: 3 } },
+			properties: {
+				[OWNER_KEY]: { v: 1, root: fake.rootId, source: "a.md", digest: "abc", version: 3 },
+			},
 		});
 		const legacy = fake.addPage({
 			title: "Legacy",
 			parentId: fake.rootId,
-			properties: { filePath: "old/b.md", contentHash: "x" },
+			properties: { filePath: "old\\b.md", contentHash: "x" },
 		});
 		const human = fake.addPage({ title: "Human", parentId: owned, authorId: "a-person" });
+		const folder = fake.addPage({ title: "Folder", parentId: legacy, type: "folder" });
 		const remote = await client().readRemote(fake.rootId);
 		const property = fake.pages.get(owned)?.properties[0];
 
@@ -142,8 +158,10 @@ describe("readRemote", () => {
 				title: "Owned",
 				version: 1,
 				authorId: ACCOUNT,
+				editorId: ACCOUNT,
 				owner: {
 					source: "a.md",
+					root: fake.rootId,
 					digest: "abc",
 					version: 3,
 					property: { id: property?.id, version: 1 },
@@ -155,6 +173,7 @@ describe("readRemote", () => {
 				title: "Human",
 				version: 1,
 				authorId: "a-person",
+				editorId: "a-person",
 				owner: null,
 			},
 			{
@@ -163,16 +182,29 @@ describe("readRemote", () => {
 				title: "Legacy",
 				version: 1,
 				authorId: ACCOUNT,
-				owner: { source: "old/b.md", digest: null, version: null, property: null },
+				editorId: ACCOUNT,
+				owner: { source: "old/b.md", root: null, digest: null, version: null, property: null },
 			},
+		]);
+		expect(remote.nodes).toEqual([
+			{ id: owned, parentId: fake.rootId },
+			{ id: human, parentId: owned },
+			{ id: legacy, parentId: fake.rootId },
+			{ id: folder, parentId: legacy },
 		]);
 	});
 
-	it("rejects an ownership property with an unexpected shape", async () => {
+	it.each([
+		["a source that is not a string", { source: 42 }],
+		[
+			"a source with a control character",
+			{ v: 1, root: "1", source: "a\n::notice::x", digest: "d", version: 1 },
+		],
+	])("rejects an ownership property with %s", async (_case, value) => {
 		const id = fake.addPage({
 			title: "Odd",
 			parentId: fake.rootId,
-			properties: { [OWNER_KEY]: { source: 42 } },
+			properties: { [OWNER_KEY]: value },
 		});
 		await expect(client().readRemote(fake.rootId)).rejects.toThrow(
 			`Page ${id} has an invalid ${OWNER_KEY} property`,

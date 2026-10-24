@@ -1,6 +1,6 @@
 import { type Applied, apply } from "./apply";
 import { Confluence } from "./confluence";
-import { newTitles, plan, type Step } from "./plan";
+import { plan, type Step, titlesToCheck } from "./plan";
 import { readSource } from "./source";
 
 export interface Config {
@@ -60,7 +60,7 @@ export async function publish(
 		sleep,
 	});
 	const remote = await confluence.readRemote(config.rootPageId);
-	const holders = await confluence.titleHolders(remote.spaceId, newTitles(desired, remote));
+	const holders = await confluence.titleHolders(remote.spaceId, titlesToCheck(desired, remote));
 	const { steps, errors } = plan(desired, remote, holders);
 	if (errors.length > 0) {
 		throw new Error(
@@ -105,6 +105,8 @@ export function describe(step: Step): string {
 		case "delete":
 			return `delete ${step.target.owner?.source} (page ${step.target.id})`;
 		case "keep":
-			return `keep ${step.target.owner?.source} (page ${step.target.id}): no file asks for it, but it still has child pages`;
+			return step.reason === "children"
+				? `keep ${step.target.owner?.source} (page ${step.target.id}): no file asks for it, but it still has child pages`
+				: `keep ${step.target.owner?.source} (page ${step.target.id}): no file asks for it, but another account created it`;
 	}
 }
