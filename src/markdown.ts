@@ -33,7 +33,10 @@ export type LinkTarget =
 export type ImageTarget =
 	| { kind: "attachment"; name: string; width?: number }
 	| { kind: "url"; src: string }
-	| { kind: "none" };
+	/** Not published; the alt text stands in. */
+	| { kind: "none" }
+	/** Not published, and nothing stands in. */
+	| { kind: "skip" };
 
 export interface Resolver {
 	/** Called for every link whose URL does not start with "#". */
@@ -321,6 +324,8 @@ function image(url: string, alt: string | null | undefined, at: number, ctx: Con
 			return `<ac:image${altAttribute}><ri:url ri:value="${escapeAttribute(target.src)}" /></ac:image>`;
 		case "none":
 			return escapeText(alt ?? "");
+		case "skip":
+			return "";
 		default:
 			return unreachable(target);
 	}

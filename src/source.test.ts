@@ -35,7 +35,7 @@ function sha256(bytes: Uint8Array): string {
 }
 
 function read(ws: string, exclude: string[] = []) {
-	const warnings: Array<[string, string, number]> = [];
+	const warnings: Array<[string, string, number | undefined]> = [];
 	const pages = readSource({
 		workspace: ws,
 		sourcePath: "docs",
@@ -214,6 +214,92 @@ describe("readSource", () => {
 		expect((await read(ws).pages)[0]?.digest).toBe(first);
 		await writeFile(join(ws, "docs/logo.png"), png(10, 10, 1));
 		expect((await read(ws).pages)[0]?.digest).not.toBe(first);
+	});
+
+	it("matches exclude patterns across dot folders", async () => {
+		const ws = await workspace({
+			"ws/docs/keep.md": "# Keep",
+			"ws/docs/node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/README.md": "# Pkg",
+			"ws/docs/drafts/.wip/y.md": "# Y",
+			"ws/docs/.notes/a.draft.md": "# Draft",
+		});
+		const exclude = ["**/node_modules/**", "drafts/**", "**/*.draft.md"];
+		const sources = (await read(ws, exclude).pages).map((p) => p.source);
+		expect(sources).toEqual(["keep.md"]);
+	});
+
+	it("falls back to the file name for an empty H1, and trims folder titles", async () => {
+		const ws = await workspace({ "ws/docs/_posts/empty.md": "#\n\nBody" });
+		const titles = (await read(ws).pages).map((page) => page.title);
+		expect(titles).toEqual(["Posts", "empty"]);
+	});
+
+	it("links to the same page for an empty path and ignores a query", async () => {
+		const ws = await workspace({
+			"ws/docs/a.md": "# A\n\n## Über\n\n[self]() [b](b.md?plain=1) [u](#%C3%BCber)",
+			"ws/docs/b.md": "# B\n\n## Über\n\n[back](a.md#%C3%BCber)",
+		});
+		const [a, b] = await read(ws).pages;
+		expect(a?.body).toBe(
+			"<h2>Über</h2><p>" +
+				'<ac:link><ri:page ri:content-title="A" /><ac:link-body>self</ac:link-body></ac:link> ' +
+				'<ac:link><ri:page ri:content-title="B" /><ac:link-body>b</ac:link-body></ac:link> ' +
+				'<a href="#%C3%9Cber">u</a></p>',
+		);
+		expect(b?.body).toBe(
+			'<h2>Über</h2><p><ac:link ac:anchor="%C3%9Cber"><ri:page ri:content-title="A" /><ac:link-body>back</ac:link-body></ac:link></p>',
+		);
+	});
+
+	it("resolves an image with a query, drops GitHub's dark-mode variant, and shares identical files", async () => {
+		const ws = await workspace({
+			"ws/docs/a.md":
+				"![l](logo.png?raw=true) ![d](dark.png#gh-dark-mode-only) ![c](copy/logo.png)",
+			"ws/docs/logo.png": png(10, 10),
+			"ws/docs/dark.png": png(10, 10, 1),
+			"ws/docs/copy/logo.png": png(10, 10),
+		});
+		const { pages, warnings } = read(ws);
+		const page = (await pages)[0];
+		expect(page?.attachments.map((a) => a.name)).toEqual(["logo.png"]);
+		expect(page?.body).toBe(
+			'<p><ac:image ac:alt="l" ac:width="10"><ri:attachment ri:filename="logo.png" /></ac:image>  ' +
+				'<ac:image ac:alt="c" ac:width="10"><ri:attachment ri:filename="logo.png" /></ac:image></p>',
+		);
+		expect(warnings).toEqual([]);
+	});
+
+	it("warns about an image path that is a folder or has no image extension", async () => {
+		const ws = await workspace({
+			"ws/docs/a.md": "![dir](img/x.png) ![cfg](../notes.txt)",
+			"ws/docs/img/x.png/inner.txt": "a folder named like an image",
+			"ws/notes.txt": "secret",
+		});
+		const { pages, warnings } = read(ws);
+		expect((await pages)[0]?.attachments).toEqual([]);
+		expect(warnings).toEqual([
+			["Image not found: img/x.png", "docs/a.md", 1],
+			[
+				"Image is not published, because its file name has no image extension: ../notes.txt",
+				"docs/a.md",
+				1,
+			],
+		]);
+	});
+
+	it("stops on an image path outside the workspace even when the file does not exist", async () => {
+		const ws = await workspace({ "ws/docs/a.md": "![x](../../missing.png)" });
+		await expect(read(ws).pages).rejects.toThrow(
+			"Image ../../missing.png in docs/a.md resolves outside the workspace",
+		);
+	});
+
+	it("warns about a symbolic link to a Markdown file instead of skipping it silently", async () => {
+		const ws = await workspace({ "ws/docs/a.md": "# A", "ws/CHANGELOG.md": "# Changes" });
+		await symlink(join(ws, "CHANGELOG.md"), join(ws, "docs/changelog.md"));
+		const { pages, warnings } = read(ws);
+		expect((await pages).map((page) => page.source)).toEqual(["a.md"]);
+		expect(warnings).toEqual([["Symbolic links are not followed", "docs/changelog.md", undefined]]);
 	});
 
 	it("rejects a source-path outside the workspace", async () => {

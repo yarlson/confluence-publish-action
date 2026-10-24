@@ -20261,7 +20261,7 @@ function sameTitle(a, b) {
 
 // src/source.ts
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { readdir as readdir2, readFile, realpath, stat as stat2 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep as sep2 } from "node:path";
 
@@ -32778,6 +32778,8 @@ function image(url, alt, at, ctx) {
       return `<ac:image${altAttribute}><ri:url ri:value="${escapeAttribute(target.src)}" /></ac:image>`;
     case "none":
       return escapeText(alt ?? "");
+    case "skip":
+      return "";
     default:
       return unreachable(target);
   }
@@ -32811,6 +32813,7 @@ var folderBody = '<ac:structured-macro ac:name="children" />';
 var maxImageWidth = 760;
 var maxTitleLength = 255;
 var anyScheme2 = /^[a-z][a-z0-9+.-]*:/i;
+var imageExtension = /\.(apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
 async function readSource(options) {
   const workspace = await realpath(options.workspace);
   const requested = resolve(workspace, options.sourcePath);
@@ -32821,7 +32824,12 @@ async function readSource(options) {
   if (!(await stat2(root).catch(() => null))?.isDirectory()) {
     throw new Error(`source-path "${options.sourcePath}" is not a directory`);
   }
-  const entries = await scan(root, "", options.exclude);
+  const entries = await scan(
+    root,
+    "",
+    options.exclude,
+    (path3) => options.warn("Symbolic links are not followed", toPosix(relative(workspace, path3)))
+  );
   const docs = /* @__PURE__ */ new Map();
   for (const entry of entries) {
     if (!entry.folder) docs.set(entry.source, parse2(await readFile(entry.path, "utf8")));
@@ -32854,22 +32862,31 @@ async function readSource(options) {
     const warn = (message, line2) => options.warn(message, file, line2);
     const link2 = (url, line2) => {
       if (anyScheme2.test(url) || url.startsWith("//")) return { kind: "url", href: url };
-      const hash = url.indexOf("#");
-      const target = localPath(hash === -1 ? url : url.slice(0, hash), entry);
+      const { path: path3, fragment } = splitUrl2(url);
+      const target = path3 === "" ? entry.path : localPath(path3, entry);
       const source = target && isInside(root, target) ? toPosix(relative(root, target)) : null;
-      const targetTitle = source ? titles.get(source) : void 0;
+      const targetTitle = source === null ? void 0 : titles.get(source);
       if (source === null || targetTitle === void 0) {
         warn(`Link target is not published: ${url}`, line2);
         return { kind: "url", href: url };
       }
-      const anchor = hash === -1 ? void 0 : docs.get(source)?.anchors.get(url.slice(hash + 1));
+      const anchor = fragment === void 0 ? void 0 : docs.get(source)?.anchors.get(decodeFragment(fragment));
       return anchor ? { kind: "page", title: targetTitle, anchor } : { kind: "page", title: targetTitle };
     };
     const image2 = (url, line2) => {
+      const { path: path3, fragment } = splitUrl2(url);
+      if (fragment === "gh-dark-mode-only") return { kind: "skip" };
       if (/^https?:/i.test(url)) return { kind: "url", src: url };
-      const target = anyScheme2.test(url) || url.startsWith("//") ? null : localPath(url, entry);
+      const target = anyScheme2.test(url) || url.startsWith("//") || path3 === "" ? null : localPath(path3, entry);
       if (!target) {
         warn(`Image is not published: ${url.slice(0, 60)}`, line2);
+        return { kind: "none" };
+      }
+      if (!isInside(workspace, target)) {
+        throw new Error(`Image ${url} in ${file} resolves outside the workspace`);
+      }
+      if (!imageExtension.test(target)) {
+        warn(`Image is not published, because its file name has no image extension: ${url}`, line2);
         return { kind: "none" };
       }
       let real;
@@ -32882,11 +32899,15 @@ async function readSource(options) {
       if (!isInside(workspace, real)) {
         throw new Error(`Image ${url} in ${file} resolves outside the workspace`);
       }
+      if (!statSync(real).isFile()) {
+        warn(`Image not found: ${url}`, line2);
+        return { kind: "none" };
+      }
       const bytes = readFileSync(real);
       const width = imageWidth(bytes);
-      const known = attachments.find((a) => a.path === real);
-      if (known) return { kind: "attachment", name: known.name, width };
       const sha256 = createHash("sha256").update(bytes).digest("hex");
+      const known = attachments.find((a) => a.sha256 === sha256);
+      if (known) return { kind: "attachment", name: known.name, width };
       const name = attachments.some((a) => a.name === basename(target)) ? `${sha256.slice(0, 8)}-${basename(target)}` : basename(target);
       attachments.push({ name, path: real, sha256 });
       return { kind: "attachment", name, width };
@@ -32904,14 +32925,15 @@ async function readSource(options) {
     return decoded.startsWith("/") ? join(workspace, decoded) : resolve(dirname(from.path), decoded);
   }
 }
-async function scan(dir, prefix, exclude) {
+async function scan(dir, prefix, exclude, skipped) {
   const children = (await readdir2(dir, { withFileTypes: true })).sort(
     (a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0
   );
   const entries = [];
   for (const child of children) {
     const source = prefix ? `${prefix}/${child.name}` : child.name;
-    if (exclude.some((pattern) => minimatch(source, pattern))) continue;
+    const candidate = child.isDirectory() ? `${source}/` : source;
+    if (exclude.some((pattern) => minimatch(candidate, pattern, { dot: true }))) continue;
     const entry = {
       source,
       parentSource: prefix || null,
@@ -32919,10 +32941,12 @@ async function scan(dir, prefix, exclude) {
       name: child.name
     };
     if (child.isDirectory()) {
-      const inner = await scan(entry.path, source, exclude);
+      const inner = await scan(entry.path, source, exclude, skipped);
       if (inner.length > 0) entries.push({ ...entry, folder: true }, ...inner);
     } else if (child.isFile() && child.name.endsWith(".md")) {
       entries.push({ ...entry, folder: false });
+    } else if (child.isSymbolicLink() && (child.name.endsWith(".md") || statSync(entry.path, { throwIfNoEntry: false })?.isDirectory())) {
+      skipped(entry.path);
     }
   }
   return entries;
@@ -32965,7 +32989,15 @@ function titleOf(page) {
   return `${page.folders.slice(page.folders.length - page.depth).join(" / ")} / ${page.base}`;
 }
 function titleCase(name) {
-  return name.replace(/[-_]/g, " ").split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
+  const title = name.replace(/[-_]/g, " ").split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ").trim();
+  return title || name;
+}
+function splitUrl2(url) {
+  const hash = url.indexOf("#");
+  const beforeHash = hash === -1 ? url : url.slice(0, hash);
+  const query = beforeHash.indexOf("?");
+  const path3 = query === -1 ? beforeHash : beforeHash.slice(0, query);
+  return hash === -1 ? { path: path3 } : { path: path3, fragment: url.slice(hash + 1) };
 }
 function imageWidth(bytes) {
   try {

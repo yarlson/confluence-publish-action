@@ -18,7 +18,7 @@ export interface Config {
 
 export interface Log {
 	info(message: string): void;
-	warning(message: string, location?: { file: string; line: number }): void;
+	warning(message: string, location?: { file: string; line?: number }): void;
 }
 
 export interface Dependencies {

@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { imageSize } from "image-size";
 import { minimatch } from "minimatch";
-import { type Document, type ImageTarget, type LinkTarget, parse, render } from "./markdown";
+import {
+	type Document,
+	decodeFragment,
+	type ImageTarget,
+	type LinkTarget,
+	parse,
+	render,
+} from "./markdown";
 
 /** One page that the files on disk ask for. */
 export interface DesiredPage {
@@ -30,13 +37,14 @@ export interface SourceOptions {
 	workspace: string;
 	sourcePath: string;
 	exclude: string[];
-	warn(message: string, file: string, line: number): void;
+	warn(message: string, file: string, line?: number): void;
 }
 
 export const folderBody = '<ac:structured-macro ac:name="children" />';
 const maxImageWidth = 760;
 const maxTitleLength = 255;
 const anyScheme = /^[a-z][a-z0-9+.-]*:/i;
+const imageExtension = /\.(apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
 
 interface Entry {
 	source: string;
@@ -58,7 +66,9 @@ export async function readSource(options: SourceOptions): Promise<DesiredPage[]>
 		throw new Error(`source-path "${options.sourcePath}" is not a directory`);
 	}
 
-	const entries = await scan(root, "", options.exclude);
+	const entries = await scan(root, "", options.exclude, (path) =>
+		options.warn("Symbolic links are not followed", toPosix(relative(workspace, path))),
+	);
 	const docs = new Map<string, Document>();
 	for (const entry of entries) {
 		if (!entry.folder) docs.set(entry.source, parse(await readFile(entry.path, "utf8")));
@@ -98,25 +108,40 @@ export async function readSource(options: SourceOptions): Promise<DesiredPage[]>
 
 		const link = (url: string, line: number): LinkTarget => {
 			if (anyScheme.test(url) || url.startsWith("//")) return { kind: "url", href: url };
-			const hash = url.indexOf("#");
-			const target = localPath(hash === -1 ? url : url.slice(0, hash), entry);
+			const { path, fragment } = splitUrl(url);
+			const target = path === "" ? entry.path : localPath(path, entry);
 			const source = target && isInside(root, target) ? toPosix(relative(root, target)) : null;
-			const targetTitle = source ? titles.get(source) : undefined;
+			const targetTitle = source === null ? undefined : titles.get(source);
 			if (source === null || targetTitle === undefined) {
 				warn(`Link target is not published: ${url}`, line);
 				return { kind: "url", href: url };
 			}
-			const anchor = hash === -1 ? undefined : docs.get(source)?.anchors.get(url.slice(hash + 1));
+			const anchor =
+				fragment === undefined
+					? undefined
+					: docs.get(source)?.anchors.get(decodeFragment(fragment));
 			return anchor
 				? { kind: "page", title: targetTitle, anchor }
 				: { kind: "page", title: targetTitle };
 		};
 
 		const image = (url: string, line: number): ImageTarget => {
+			const { path, fragment } = splitUrl(url);
+			// GitHub shows this variant only in its dark theme.
+			if (fragment === "gh-dark-mode-only") return { kind: "skip" };
 			if (/^https?:/i.test(url)) return { kind: "url", src: url };
-			const target = anyScheme.test(url) || url.startsWith("//") ? null : localPath(url, entry);
+			const target =
+				anyScheme.test(url) || url.startsWith("//") || path === "" ? null : localPath(path, entry);
 			if (!target) {
 				warn(`Image is not published: ${url.slice(0, 60)}`, line);
+				return { kind: "none" };
+			}
+			// Before any file system access: a UNC path on Windows would reach the network.
+			if (!isInside(workspace, target)) {
+				throw new Error(`Image ${url} in ${file} resolves outside the workspace`);
+			}
+			if (!imageExtension.test(target)) {
+				warn(`Image is not published, because its file name has no image extension: ${url}`, line);
 				return { kind: "none" };
 			}
 			let real: string;
@@ -129,13 +154,17 @@ export async function readSource(options: SourceOptions): Promise<DesiredPage[]>
 			if (!isInside(workspace, real)) {
 				throw new Error(`Image ${url} in ${file} resolves outside the workspace`);
 			}
+			if (!statSync(real).isFile()) {
+				warn(`Image not found: ${url}`, line);
+				return { kind: "none" };
+			}
 
 			const bytes = readFileSync(real);
 			const width = imageWidth(bytes);
-			const known = attachments.find((a) => a.path === real);
+			const sha256 = createHash("sha256").update(bytes).digest("hex");
+			const known = attachments.find((a) => a.sha256 === sha256);
 			if (known) return { kind: "attachment", name: known.name, width };
 
-			const sha256 = createHash("sha256").update(bytes).digest("hex");
 			const name = attachments.some((a) => a.name === basename(target))
 				? `${sha256.slice(0, 8)}-${basename(target)}`
 				: basename(target);
@@ -161,14 +190,21 @@ export async function readSource(options: SourceOptions): Promise<DesiredPage[]>
 	}
 }
 
-async function scan(dir: string, prefix: string, exclude: string[]): Promise<Entry[]> {
+async function scan(
+	dir: string,
+	prefix: string,
+	exclude: string[],
+	skipped: (path: string) => void,
+): Promise<Entry[]> {
 	const children = (await readdir(dir, { withFileTypes: true })).sort((a, b) =>
 		a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
 	);
 	const entries: Entry[] = [];
 	for (const child of children) {
 		const source = prefix ? `${prefix}/${child.name}` : child.name;
-		if (exclude.some((pattern) => minimatch(source, pattern))) continue;
+		// A trailing "/" lets "drafts/**" match the folder itself, so excluded folders are not walked.
+		const candidate = child.isDirectory() ? `${source}/` : source;
+		if (exclude.some((pattern) => minimatch(candidate, pattern, { dot: true }))) continue;
 		const entry = {
 			source,
 			parentSource: prefix || null,
@@ -176,10 +212,15 @@ async function scan(dir: string, prefix: string, exclude: string[]): Promise<Ent
 			name: child.name,
 		};
 		if (child.isDirectory()) {
-			const inner = await scan(entry.path, source, exclude);
+			const inner = await scan(entry.path, source, exclude, skipped);
 			if (inner.length > 0) entries.push({ ...entry, folder: true }, ...inner);
 		} else if (child.isFile() && child.name.endsWith(".md")) {
 			entries.push({ ...entry, folder: false });
+		} else if (
+			child.isSymbolicLink() &&
+			(child.name.endsWith(".md") || statSync(entry.path, { throwIfNoEntry: false })?.isDirectory())
+		) {
+			skipped(entry.path);
 		}
 	}
 	return entries;
@@ -241,12 +282,24 @@ function titleOf(page: TitledPage): string {
 	return `${page.folders.slice(page.folders.length - page.depth).join(" / ")} / ${page.base}`;
 }
 
+/** As confluence-markdown-sync-action did, so adopted folder pages keep their titles. */
 function titleCase(name: string): string {
-	return name
+	const title = name
 		.replace(/[-_]/g, " ")
 		.split(" ")
 		.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-		.join(" ");
+		.join(" ")
+		.trim();
+	return title || name;
+}
+
+/** The path of a Markdown URL without its query and fragment, and the fragment. */
+function splitUrl(url: string): { path: string; fragment?: string } {
+	const hash = url.indexOf("#");
+	const beforeHash = hash === -1 ? url : url.slice(0, hash);
+	const query = beforeHash.indexOf("?");
+	const path = query === -1 ? beforeHash : beforeHash.slice(0, query);
+	return hash === -1 ? { path } : { path, fragment: url.slice(hash + 1) };
 }
 
 function imageWidth(bytes: Uint8Array): number | undefined {
