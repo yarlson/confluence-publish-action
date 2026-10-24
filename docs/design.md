@@ -119,19 +119,26 @@ it is deleted too. An item can be a page, a folder, a whiteboard, a database or 
 - Anyone who can edit a page can add an ownership property to it, so the property alone is not
   enough to delete. The creator of a page cannot be changed.
 
+## Confirmed on a live site
+
+The fake Confluence in `test/fake-confluence.ts` encodes the documented behavior. `npm run test:live`
+confirmed these points, which Atlassian does not document for Cloud, against a Confluence Cloud site
+on 2026-10-24:
+
+- Cloud keeps `ac:link` with `ri:page` and `ac:anchor`, `ri:url` images and
+  `<a href="#Heading-Text">` heading links as written.
+- Pages created through REST v2 are not marked for the legacy editor.
+- The `title` filter of `GET /api/v2/pages` ignores case, as title uniqueness does.
+- A page in the trash does not hold its title, so a file that moves to another folder and keeps
+  its H1 can be created again.
+- The v1 multipart attachment upload works with `X-Atlassian-Token: nocheck`. After an update with
+  an upload, the next run makes no writes.
+
 ## Open questions
 
-The fake Confluence in `test/fake-confluence.ts` encodes the documented behavior. These points are
-not documented for Cloud and need `npm run test:live` against a real site:
-
-- Whether Cloud keeps `ac:link` with `ri:page` and `ac:anchor`, `ri:url` images and
-  `<a href="#Heading-Text">` heading links as written.
-- Whether pages created through REST v2 open in the current editor.
-- Whether a page in the trash still holds its title. If it does, a file that moves to another
-  folder and keeps its H1 fails at create.
-- Whether the `title` filter of `GET /api/v2/pages` ignores case. Confluence titles are unique
-  ignoring case. If the filter does not ignore case, a page elsewhere in the space whose title
-  differs only in case is not found by the plan, and the create fails during the run.
+- An account that is not a space admin gets 404 for a deleted page, also with `status=trashed`. So
+  the live test cannot confirm that a deleted page is in the trash rather than purged. The
+  documented behavior of `DELETE /api/v2/pages/{id}` without `purge` is the trash.
 - Whether Confluence gives duplicate headings on one page different anchors. The action maps every
   duplicate to the anchor of the first one.
 - Whether replacing or deleting an attachment in Confluence adds a page version. If it does not, the
