@@ -1,0 +1,43 @@
+name: "Publish Markdown to Confluence"
+description: "Publish a folder of Markdown files as a Confluence Cloud page tree. One-way, idempotent, with a dry-run plan."
+author: "Yar Kravtsov"
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  confluence-url:
+    description: "Confluence Cloud base URL, ending in /wiki (for example https://example.atlassian.net/wiki)"
+    required: true
+  root-page-id:
+    description: "ID of the existing page that the published tree goes under"
+    required: true
+  email:
+    description: "Email of the Atlassian account that owns the API token"
+    required: true
+  api-token:
+    description: "Atlassian API token for that account"
+    required: true
+  source-path:
+    description: "Folder of Markdown files, relative to the workspace"
+    default: "docs"
+  exclude-patterns:
+    description: "Glob patterns to skip, relative to source-path, separated by commas or newlines"
+    default: "**/node_modules/**,**/.git/**"
+  dry-run:
+    description: "When true, print the plan and change nothing"
+    default: "false"
+
+outputs:
+  pages-created:
+    description: "Number of pages created"
+  pages-updated:
+    description: "Number of pages updated, including adopted pages"
+  pages-deleted:
+    description: "Number of pages moved to the trash"
+  pages-skipped:
+    description: "Number of pages left unchanged"
+
+runs:
+  using: "node24"
+  main: "dist/index.js"

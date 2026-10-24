@@ -1,0 +1,27 @@
+{
+	"name": "confluence-publish-action",
+	"version": "0.1.0",
+	"private": true,
+	"description": "GitHub Action that publishes a folder of Markdown files as a Confluence page tree",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"build": "esbuild src/index.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/index.js --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+		"check": "biome check . && tsc --noEmit && vitest run",
+		"lint:fix": "biome check --write .",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@actions/core": "3.0.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15",
+		"@types/node": "24.19.2",
+		"esbuild": "0.28.2",
+		"typescript": "7.0.2",
+		"vitest": "5.0.5"
+	}
+}
